@@ -5,7 +5,7 @@
 
 	<groupId>com.github.gracothayrondev</groupId>
 	<artifactId>jsweet-maven-plugin</artifactId>
-	<version>${jsweet.transpiler.version}</version>
+	<version>3.1.0</version>
 	<name>JSweet maven plugin</name>
 	<description>JSweet maven plugin providing build and clean operations of
 		JSweet sources</description>
@@ -51,6 +51,13 @@
 		<developerConnection>
 			scm:git:git@github.com:lgrignon/jsweet-maven-plugin.git</developerConnection>
 	</scm>
+	
+	<repositories>
+		<repository>
+			<id>jitpack.io</id>
+			<url>https://jitpack.io</url>
+		</repository>
+	</repositories>
 
 	<build>
 		<plugins>
