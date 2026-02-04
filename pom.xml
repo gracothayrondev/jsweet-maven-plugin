@@ -13,7 +13,6 @@
 	<packaging>maven-plugin</packaging>
 
 	<properties>
-		<jsweet.transpiler.version>3.1.0</jsweet.transpiler.version>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<java.version.release>21</java.version.release>
 		<java.version>21</java.version>
@@ -76,7 +75,7 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-plugin-plugin</artifactId>
-				<version>3.6.0</version>
+				<version>3.15.2</version>
 				<configuration>
 					<!-- see http://jira.codehaus.org/browse/MNG-5346 -->
 					<skipErrorNoDescriptorsFound>true</skipErrorNoDescriptorsFound>
@@ -116,9 +115,9 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-javadoc-plugin</artifactId>
-				<version>2.10.3</version>
+				<version>3.12.0</version>
 				<configuration>
-					<javadocVersion>1.8</javadocVersion>
+					<javadocVersion>21.0.3</javadocVersion>
 					<sourcepath>src/main/java</sourcepath>
 					<encoding>${project.build.sourceEncoding}</encoding>
 					<skip>${skipJavadoc}</skip>
@@ -139,7 +138,7 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-gpg-plugin</artifactId>
-				<version>1.6</version>
+				<version>3.2.8</version>
 				<configuration>
 					<skip>${skipSigning}</skip>
 				</configuration>
