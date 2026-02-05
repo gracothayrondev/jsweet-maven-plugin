@@ -56,12 +56,13 @@ public class JSweetWatchMojo extends AbstractJSweetMojo {
 	private static LinkedList<String> __RandomKeysTrigger = new LinkedList<>();
 
 	private JSweetTranspiler transpiler;
+	
+	@Parameter(defaultValue = "${project}", readonly = true, required = true)
+    protected MavenProject project;
 
 	public void execute() throws MojoFailureException, MojoExecutionException {
 		super.execute();
 		
-		MavenProject project = getMavenProject();
-
 		transpiler = createJSweetTranspiler(project);
 
 		getLog().info("- Starting transpilator process  ... ");

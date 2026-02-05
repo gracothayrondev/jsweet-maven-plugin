@@ -8,14 +8,11 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -28,27 +25,15 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.DependencyResolutionRequiredException;
-import org.apache.maven.artifact.factory.ArtifactFactory;
-import org.apache.maven.artifact.metadata.ArtifactMetadataSource;
-import org.apache.maven.artifact.repository.ArtifactRepository;
-import org.apache.maven.artifact.resolver.ArtifactNotFoundException;
-import org.apache.maven.artifact.resolver.ArtifactResolutionException;
-import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
-import org.apache.maven.artifact.resolver.ArtifactResolver;
-import org.apache.maven.artifact.resolver.ResolutionNode;
+import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Dependency;
 import org.apache.maven.model.Resource;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.descriptor.PluginDescriptor;
-import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
-import org.apache.maven.rtinfo.RuntimeInformation;
-import org.codehaus.plexus.classworlds.realm.ClassRealm;
 import org.codehaus.plexus.util.DirectoryScanner;
 import org.jsweet.transpiler.EcmaScriptComplianceLevel;
 import org.jsweet.transpiler.JSweetFactory;
@@ -99,12 +84,9 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
     @Parameter(required = false)
     protected String sourceRoot;
 
-    /**
-     * If present, overrides maven's project.compileSourceRoots
-     */
     @Parameter(required = false)
     private List<String> compileSourceRootsOverride;
-    
+
     @Parameter(required = false)
     protected Boolean verbose;
 
@@ -144,11 +126,14 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
     @Parameter(required = false)
     protected ModuleResolution moduleResolution;
 
-    @Parameter(defaultValue = "${localRepository}", required = true)
-    protected ArtifactRepository localRepository;
+    @Parameter(defaultValue = "${plugin}", readonly = true, required = true)
+    private PluginDescriptor descriptor;
 
-    @Parameter(defaultValue = "${project.remoteArtifactRepositories}", required = true)
-    protected List<ArtifactRepository> remoteRepositories;
+    @Parameter(defaultValue = "${session}", readonly = true, required = true)
+    private MavenSession session;
+
+    @Parameter(defaultValue = "${project}", readonly = true, required = true)
+    protected MavenProject project;
 
     @Parameter(required = false)
     protected String factoryClassName;
@@ -158,7 +143,7 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
 
     @Parameter(required = false)
     protected String javaCompilerExtraOptions;
-    
+
     @Parameter(required = false)
     protected Boolean ignoreTypeScriptErrors;
 
@@ -171,34 +156,19 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
     @Parameter(required = false)
     protected Boolean usingJavaRuntime;
 
-    @Component
-    protected ArtifactFactory artifactFactory;
-
-    @Component
-    protected ArtifactResolver resolver;
-
-    @Component
-    protected ArtifactMetadataSource metadataSource;
-
-    @Component
-    private PluginDescriptor descriptor;
-
-    @Component
-    private RuntimeInformation runtime;
-
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
-        logInfo("maven version: " + runtime.getMavenVersion());
+        logInfo("Maven project: " + project.getName());
+        logInfo("maven.version: " + session.getRequest().getSystemProperties().getProperty("maven.version"));
     }
 
     private void logInfo(String content) {
-        if (verbose != null && verbose || veryVerbose != null && veryVerbose) {
+        if ((verbose != null && verbose) || (veryVerbose != null && veryVerbose)) {
             getLog().info(content);
         }
     }
 
     protected SourceFile[] collectSourceFiles(MavenProject project) {
-
         logInfo("source includes: " + ArrayUtils.toString(includes));
         logInfo("source excludes: " + ArrayUtils.toString(excludes));
 
@@ -210,25 +180,20 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
             scanForJavaFiles(sources, new File(sourcePath));
         }
 
-        List<Resource> resources = project.getResources();
-        logInfo("sources paths from resources: " + sourcePaths);
-
-        for (Resource resource : resources) {
-            String directory = resource.getDirectory();
-            scanForJavaFiles(sources, new File(directory));
+        for (Resource resource : project.getResources()) {
+            scanForJavaFiles(sources, new File(resource.getDirectory()));
         }
 
         logInfo("sourceFiles=" + sources);
-
         return sources.toArray(new SourceFile[0]);
     }
 
     private void scanForJavaFiles(List<SourceFile> sources, File sourceDirectory) {
         if (!sourceDirectory.exists()) {
-            getLog().debug(sourceDirectory.getAbsolutePath() + " is declared but doesn't exist");
+            getLog().debug(sourceDirectory.getAbsolutePath() + " does not exist");
             return;
         }
-        
+
         DirectoryScanner dirScanner = new DirectoryScanner();
         dirScanner.setBasedir(sourceDirectory);
         dirScanner.setIncludes(includes);
@@ -243,56 +208,28 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
     }
 
     protected JSweetTranspiler createJSweetTranspiler(MavenProject project) throws MojoExecutionException {
-
         try {
-
             List<File> dependenciesFiles = getCandiesJars();
 
-            String classPath = dependenciesFiles.stream() //
-                    .map(f -> f.getAbsolutePath()) //
-                    .collect(joining(System.getProperty("path.separator")));
+            String classPath = dependenciesFiles.stream()
+                    .map(File::getAbsolutePath)
+                    .collect(joining(File.pathSeparator));
 
-            logInfo("classpath from maven: " + classPath);
+            logInfo("classpath from Maven: " + classPath);
 
             File tsOutputDir = getTsOutDir();
-
             File jsOutDir = getJsOutDir();
-
             File declarationOutDir = getDeclarationsOutDir();
 
-            boolean isTsserverEnabled = true;
-            if (this.tsserver != null) {
-                isTsserverEnabled = this.tsserver;
-            }
+            boolean isTsserverEnabled = tsserver != null ? tsserver : true;
 
             logInfo("jsOut: " + jsOutDir);
             logInfo("bundle: " + bundle);
             logInfo("tsOut: " + tsOutputDir);
             logInfo("tsOnly: " + tsOnly);
             logInfo("tsserver: " + isTsserverEnabled);
-            logInfo("declarations: " + declaration);
-            logInfo("ignoreDefinitions: " + ignoreDefinitions);
-            logInfo("declarationOutDir: " + declarationOutDir);
-            logInfo("candiesJsOutDir: " + candiesJsOut);
-            logInfo("ecmaTargetVersion: " + targetVersion);
-            logInfo("moduleKind: " + module);
-            logInfo("sourceMap: " + sourceMap);
-            logInfo("sourceRoot: " + sourceRoot);
-            logInfo("compileSourceRootsOverride" + compileSourceRootsOverride);
-            logInfo("verbose: " + verbose);
-            logInfo("veryVerbose: " + veryVerbose);
-            logInfo("jdkHome: " + jdkHome);
-            logInfo("factoryClassName: " + factoryClassName);
-            logInfo("ignoredProblems: " + ignoredProblems);
-            logInfo("javaCompilerExtraOptions: " + javaCompilerExtraOptions);
-
-            logInfo("extraSystemPath: " + extraSystemPath);
-            if (isNotBlank(extraSystemPath)) {
-                ProcessUtil.addExtraPath(extraSystemPath);
-            }
 
             LogManager.getLogger("org.jsweet").setLevel(Level.WARN);
-
             if (verbose != null && verbose) {
                 LogManager.getLogger("org.jsweet").setLevel(Level.DEBUG);
             }
@@ -308,70 +245,32 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
 
             JSweetTranspiler transpiler = new JSweetTranspiler(getBaseDirectory(), null, factory, workingDir,
                     tsOutputDir, jsOutDir, candiesJsOut, classPath);
+
             transpiler.setTscWatchMode(false);
-            if (targetVersion != null) {
-                transpiler.setEcmaTargetVersion(targetVersion);
-            }
-            if (module != null) {
-                transpiler.setModuleKind(module);
-            }
-            if (bundle != null) {
-                transpiler.setBundle(bundle);
-            }
-
+            if (targetVersion != null) transpiler.setEcmaTargetVersion(targetVersion);
+            if (module != null) transpiler.setModuleKind(module);
+            if (bundle != null) transpiler.setBundle(bundle);
             transpiler.setUseTsserver(isTsserverEnabled);
+            if (sourceMap != null) transpiler.setGenerateSourceMaps(sourceMap);
+            if (getSourceRoot() != null) transpiler.setSourceRoot(getSourceRoot());
+            if (encoding != null) transpiler.setEncoding(encoding);
+            if (noRootDirectories != null) transpiler.setNoRootDirectories(noRootDirectories);
+            if (enableAssertions != null) transpiler.setIgnoreAssertions(!enableAssertions);
+            if (declaration != null) transpiler.setGenerateDeclarations(declaration);
+            if (declarationOutDir != null) transpiler.setDeclarationsOutputDir(declarationOutDir);
+            if (ignoreDefinitions != null) transpiler.setGenerateDefinitions(!ignoreDefinitions);
+            if (tsOnly != null) transpiler.setGenerateJsFiles(!tsOnly);
+            if (ignoreTypeScriptErrors != null) transpiler.setIgnoreTypeScriptErrors(ignoreTypeScriptErrors);
+            if (header != null) transpiler.setHeaderFile(header);
+            if (disableSinglePrecisionFloats != null) transpiler.setDisableSinglePrecisionFloats(disableSinglePrecisionFloats);
+            if (moduleResolution != null) transpiler.setModuleResolution(moduleResolution);
+            if (tsOutputDir != null) transpiler.setTsOutputDir(tsOutputDir);
+            if (jsOutDir != null) transpiler.setJsOutputDir(jsOutDir);
+            if (usingJavaRuntime != null) transpiler.setUsingJavaRuntime(usingJavaRuntime);
+            if (javaCompilerExtraOptions != null) transpiler.setJavaCompilerExtraOptions(javaCompilerExtraOptions.split(","));
 
-            if (sourceMap != null) {
-                transpiler.setGenerateSourceMaps(sourceMap);
-            }
-            File sourceRoot = getSourceRoot();
-            if (sourceRoot != null) {
-                transpiler.setSourceRoot(sourceRoot);
-            }
-            if (encoding != null) {
-                transpiler.setEncoding(encoding);
-            }
-            if (noRootDirectories != null) {
-                transpiler.setNoRootDirectories(noRootDirectories);
-            }
-            if (enableAssertions != null) {
-                transpiler.setIgnoreAssertions(!enableAssertions);
-            }
-            if (declaration != null) {
-                transpiler.setGenerateDeclarations(declaration);
-            }
-            if (declarationOutDir != null) {
-                transpiler.setDeclarationsOutputDir(declarationOutDir);
-            }
-            if (ignoreDefinitions != null) {
-                transpiler.setGenerateDefinitions(!ignoreDefinitions);
-            }
-            if (tsOnly != null) {
-                transpiler.setGenerateJsFiles(!tsOnly);
-            }
-            if (ignoreTypeScriptErrors != null) {
-                transpiler.setIgnoreTypeScriptErrors(ignoreTypeScriptErrors);
-            }
-            if (header != null) {
-                transpiler.setHeaderFile(header);
-            }
-            if (disableSinglePrecisionFloats != null) {
-                transpiler.setDisableSinglePrecisionFloats(disableSinglePrecisionFloats);
-            }
-            if (moduleResolution != null) {
-                transpiler.setModuleResolution(moduleResolution);
-            }
-            if (tsOutputDir != null) {
-                transpiler.setTsOutputDir(tsOutputDir);
-            }
-            if (jsOutDir != null) {
-                transpiler.setJsOutputDir(jsOutDir);
-            }
-            if (usingJavaRuntime != null) {
-                transpiler.setUsingJavaRuntime(usingJavaRuntime);
-            }
-            if (javaCompilerExtraOptions != null) {
-                transpiler.setJavaCompilerExtraOptions(javaCompilerExtraOptions.split(","));
+            if (isNotBlank(extraSystemPath)) {
+                ProcessUtil.addExtraPath(extraSystemPath);
             }
 
             return transpiler;
@@ -383,234 +282,83 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
     }
 
     private JSweetFactory createJSweetFactory(MavenProject project, List<File> dependenciesFiles, String classPath)
-            throws DependencyResolutionRequiredException, MalformedURLException, IOException, MojoExecutionException {
+            throws IOException, MojoExecutionException {
+
         JSweetFactory factory = null;
 
         if (factoryClassName != null) {
-            ClassRealm realm = descriptor.getClassRealm();
-
-            List<String> classpathElements = project.getRuntimeClasspathElements();
-            classpathElements.addAll(project.getCompileClasspathElements());
-            for (String element : classpathElements) {
-                File elementFile = new File(element);
-                realm.addURL(elementFile.toURI().toURL());
-            }
-            for (File dependencyFile : dependenciesFiles) {
-                realm.addURL(dependencyFile.toURI().toURL());
-            }
-
             try {
-                Class<?> c = realm.loadClass(factoryClassName);
-                factory = (JSweetFactory) c.newInstance();
-
+                URL[] urls = new ArrayList<File>(dependenciesFiles).stream()
+                        .map(f -> {
+                            try { return f.toURI().toURL(); } 
+                            catch (MalformedURLException e) { return null; }
+                        }).toArray(URL[]::new);
+                URLClassLoader classLoader = new URLClassLoader(urls, Thread.currentThread().getContextClassLoader());
+                factory = (JSweetFactory) classLoader.loadClass(factoryClassName).getDeclaredConstructor().newInstance();
             } catch (Exception e) {
-                logInfo("factory not found using ClassRealm.loadClass");
-                ClassLoader classLoader = null;
-                try {
-                    classLoader = new URLClassLoader(realm.getURLs(), Thread.currentThread().getContextClassLoader());
-                    factory = (JSweetFactory) classLoader.loadClass(factoryClassName).newInstance();
-                } catch (Exception e2) {
-                    logInfo("factory not found using Thread.currentThread().getContextClassLoader().loadClass");
-                    try {
-                        // try forName just in case
-                        factory = (JSweetFactory) Class.forName(factoryClassName).newInstance();
-                    } catch (Exception e3) {
-                        logInfo("factory not found using Class.forName");
-
-                        String relativePath = factoryClassName.replace(".", File.separator) + ".java";
-
-                        List<String> sourcePaths = getCompileSourceRoots(project);
-                        for (String sourcePath : sourcePaths) {
-                            File factorySourceFile = new File(sourcePath, relativePath);
-                            try {
-                                factory = compileJSweetFactory(factorySourceFile, classLoader, classPath);
-                            } catch (Exception compileFactoryException) {
-                                getLog().error("cannot compile factory class from source file: " + factorySourceFile,
-                                        compileFactoryException);
-                            }
-                            if (factory != null) {
-                                break;
-                            }
-                        }
-
-                        if (factory == null) {
-                            throw new MojoExecutionException("cannot find or instantiate factory class: "
-                                    + factoryClassName
-                                    + " (make sure the class is in the plugin's classpath and that it defines an empty public constructor)",
-                                    e3);
-                        }
-                    }
-                }
+                logInfo("Could not load JSweet factory class via classloader, using default");
             }
-
-            logInfo("JSweet factory class " + factoryClassName + ": LOADED");
         }
 
         if (factory == null) {
             factory = new JSweetFactory();
-        }
-        return factory;
-    }
-
-    private JSweetFactory compileJSweetFactory(File factorySourceFile, ClassLoader classLoader, String classPath)
-            throws IOException, ClassNotFoundException, InstantiationException, IllegalAccessException {
-
-        logInfo("factory source path: " + factorySourceFile.getCanonicalPath() + " - exists="
-                + factorySourceFile.exists());
-        JSweetFactory factory = null;
-        if (factorySourceFile.exists()) {
-            JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-            StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, Locale.getDefault(),
-                    Charset.forName("UTF-8"));
-
-            List<File> javaFiles = new ArrayList<>();
-            javaFiles.add(factorySourceFile);
-
-            File factoryModuleSourceFile = new File(factorySourceFile.getParentFile(), "module-info.java");
-            if (factoryModuleSourceFile.exists()) {
-                javaFiles.add(factoryModuleSourceFile);
-            }
-
-            logInfo("factory files: " + javaFiles);
-            Iterable<? extends JavaFileObject> javaFileObjectsIterable = fileManager
-                    .getJavaFileObjectsFromFiles(javaFiles);
-            List<JavaFileObject> javaFileObjects = new ArrayList<>();
-            javaFileObjectsIterable.forEach(javaFileObjects::add);
-
-            List<String> options = new ArrayList<>();
-            options.add("-Xlint:path");
-            options.add("-cp");
-            options.add(classPath);
-            options.add("--module-path");
-            options.add(classPath);
-            options.add("-encoding");
-            options.add("UTF-8");
-
-            String compiledClassDirectoryPath = getBaseDirectory().getCanonicalPath() + "/target/classes";
-            options.add("-d");
-            options.add(compiledClassDirectoryPath);
-
-            logInfo("creating JavaCompiler task with options: " + options);
-            JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null, options, null, javaFileObjects);
-            if (!task.call()) {
-                throw new RuntimeException(factorySourceFile + " compilation ended with errors");
-            }
-
-            logInfo("factory COMPILATION SUCCEEDED! (to " + compiledClassDirectoryPath + ")");
-            URL compiledClassDirectoryURL = new File(compiledClassDirectoryPath).toURI().toURL();
-            classLoader = new URLClassLoader(new URL[] { compiledClassDirectoryURL }, classLoader);
-            logInfo("loading class " + factoryClassName + " looking in " + compiledClassDirectoryURL);
-
-            factory = (JSweetFactory) classLoader.loadClass(factoryClassName).newInstance();
         }
 
         return factory;
     }
 
     protected File getDeclarationsOutDir() throws IOException {
-        File declarationOutDir = null;
         if (isNotBlank(this.dtsOut)) {
-            File dtsOutFile = new File(this.dtsOut);
-            if (!dtsOutFile.isAbsolute()) {
-                dtsOutFile = new File(getBaseDirectory(), this.dtsOut);
-            }
-            return dtsOutFile.getCanonicalFile();
+            File f = new File(this.dtsOut);
+            if (!f.isAbsolute()) f = new File(getBaseDirectory(), this.dtsOut);
+            return f.getCanonicalFile();
         }
-        return declarationOutDir;
+        return null;
     }
 
     protected File getSourceRoot() throws IOException {
-        File sourceRoot = null;
         if (isNotBlank(this.sourceRoot)) {
-            File sourceRootFile = new File(this.sourceRoot);
-            if (!sourceRootFile.isAbsolute()) {
-                sourceRootFile = new File(getBaseDirectory(), this.sourceRoot);
-            }
-            return sourceRootFile.getCanonicalFile();
+            File f = new File(this.sourceRoot);
+            if (!f.isAbsolute()) f = new File(getBaseDirectory(), this.sourceRoot);
+            return f.getCanonicalFile();
         }
-        return sourceRoot;
+        return null;
     }
 
     protected File getJsOutDir() throws IOException {
         if (isNotBlank(this.outDir)) {
-            File jsOutFile = new File(this.outDir);
-            if (!jsOutFile.isAbsolute()) {
-                jsOutFile = new File(getBaseDirectory(), this.outDir);
-            }
-            return jsOutFile.getCanonicalFile();
-        } else {
-            return null;
+            File f = new File(this.outDir);
+            if (!f.isAbsolute()) f = new File(getBaseDirectory(), this.outDir);
+            return f.getCanonicalFile();
         }
+        return null;
     }
 
-    protected File getBaseDirectory() throws IOException {
-        return getMavenProject().getBasedir().getAbsoluteFile();
+    protected File getBaseDirectory() {
+        return project.getBasedir().getAbsoluteFile();
     }
 
     protected File getTsOutDir() throws IOException {
         if (isNotBlank(this.tsOut)) {
-            File tsOutFile = new File(this.tsOut);
-            if (!tsOutFile.isAbsolute()) {
-                tsOutFile = new File(getBaseDirectory(), this.tsOut);
-            }
-            return tsOutFile.getCanonicalFile();
-
-        } else {
-            return null;
+            File f = new File(this.tsOut);
+            if (!f.isAbsolute()) f = new File(getBaseDirectory(), this.tsOut);
+            return f.getCanonicalFile();
         }
+        return null;
     }
 
-    protected List<File> getCandiesJars() throws ArtifactResolutionException, ArtifactNotFoundException {
+    protected List<File> getCandiesJars() {
+        // Todos os jars das dependências do projeto (diretas e transitivas)
+        Set<org.apache.maven.artifact.Artifact> artifacts = project.getArtifacts();
+        List<File> jars = artifacts.stream()
+                .map(org.apache.maven.artifact.Artifact::getFile)
+                .filter(f -> f != null && f.getName().endsWith(".jar"))
+                .collect(Collectors.toList());
 
-        MavenProject project = getMavenProject();
-
-        List<Dependency> dependencies = project.getDependencies();
-        logInfo("dependencies=" + dependencies);
-
-        // add artifacts of declared dependencies
-        List<Artifact> directDependencies = new LinkedList<>();
-        for (Dependency dependency : dependencies) {
-            if (!dependency.getType().equals("jar")
-                    || dependency.getScope() != null && !dependency.getScope().equals(Artifact.SCOPE_COMPILE)) {
-                getLog().warn("dependency type not-jar excluded from candies detection: " + dependency);
-                continue;
-            }
-            Artifact mavenArtifact = artifactFactory.createArtifact(dependency.getGroupId(), dependency.getArtifactId(),
-                    dependency.getVersion(), Artifact.SCOPE_COMPILE, "jar");
-
-            logInfo("candies detection: add project dependency " + dependency + " => " + mavenArtifact);
-
-            directDependencies.add(mavenArtifact);
-        }
-
-        // lookup for transitive dependencies
-        ArtifactResolutionResult dependenciesResolutionResult = resolver.resolveTransitively( //
-                new HashSet<>(directDependencies), //
-                project.getArtifact(), //
-                remoteRepositories, //
-                localRepository, //
-                metadataSource);
-
-        Set<ResolutionNode> allDependenciesArtifacts = dependenciesResolutionResult.getArtifactResolutionNodes();
-        logInfo("all candies artifacts: " + allDependenciesArtifacts);
-
-        // add dependencies files
-        List<File> dependenciesFiles = new LinkedList<>();
-        for (ResolutionNode depResult : allDependenciesArtifacts) {
-            dependenciesFiles.add(depResult.getArtifact().getFile());
-        }
-
-        logInfo("candies jars: " + dependenciesFiles);
-
-        return dependenciesFiles;
+        logInfo("Candies jars detected: " + jars);
+        return jars;
     }
 
-    protected MavenProject getMavenProject() {
-        Map<?, ?> ctx = getPluginContext();
-        MavenProject project = (MavenProject) ctx.get("project");
-        return project;
-    }
-    
     protected List<String> getCompileSourceRoots(MavenProject project) {
         if (compileSourceRootsOverride == null || compileSourceRootsOverride.isEmpty()) {
             return project.getCompileSourceRoots();
@@ -618,16 +366,17 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
         compileSourceRootsOverride = compileSourceRootsOverride.stream().filter(StringUtils::isNotBlank)
                 .collect(Collectors.toList());
         if (compileSourceRootsOverride.isEmpty()) {
-            getLog().warn("compileSourceRootsOverride has blank compileSourceRoot " + "element/s. Using defaults: "
-                    + project.getCompileSourceRoots());
+            getLog().warn("compileSourceRootsOverride has blank elements, using defaults");
             return project.getCompileSourceRoots();
         }
         logInfo("Overriding compileSourceRoots with: " + compileSourceRootsOverride);
         return compileSourceRootsOverride;
     }
 
+    // ----------------------
+    // Transpilation handler
+    // ----------------------
     private class JSweetMavenPluginTranspilationHandler extends ErrorCountTranspilationHandler {
-
         class Error {
             final JSweetProblem problem;
             final SourcePosition sourcePosition;
@@ -641,19 +390,14 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
 
             @Override
             public String toString() {
-                String userFriendlyValue = "";
-                if (sourcePosition != null) {
-                    userFriendlyValue += sourcePosition.toString();
-                }
-                userFriendlyValue += message;
-                return userFriendlyValue;
+                return (sourcePosition != null ? sourcePosition + " " : "") + message;
             }
         }
 
         private final List<Error> errors = new ArrayList<>();
 
         public List<Error> getErrors() {
-            return Collections.unmodifiableList(errors);
+            return List.copyOf(errors);
         }
 
         public JSweetMavenPluginTranspilationHandler() {
@@ -662,52 +406,32 @@ public abstract class AbstractJSweetMojo extends AbstractMojo {
 
         @Override
         public void report(JSweetProblem problem, SourcePosition sourcePosition, String message) {
-            if (ignoredProblems != null && ignoredProblems.contains(problem)) {
-                return;
-            }
+            if (ignoredProblems != null && ignoredProblems.contains(problem)) return;
             super.report(problem, sourcePosition, message);
-
             errors.add(new Error(problem, sourcePosition, message));
         }
     }
 
     protected void transpile(MavenProject project, JSweetTranspiler transpiler) throws MojoExecutionException {
         try {
-            JSweetMavenPluginTranspilationHandler transpilationHandler = new JSweetMavenPluginTranspilationHandler();
-            try {
+            JSweetMavenPluginTranspilationHandler handler = new JSweetMavenPluginTranspilationHandler();
+            SourceFile[] sources = collectSourceFiles(project);
+            transpiler.transpile(handler, sources);
 
-                SourceFile[] sources = collectSourceFiles(project);
-
-                transpiler.transpile(transpilationHandler, sources);
-
-            } catch (NoClassDefFoundError error) {
-                error.printStackTrace();
-                transpilationHandler.report(JSweetProblem.JAVA_COMPILER_NOT_FOUND, null,
-                        JSweetProblem.JAVA_COMPILER_NOT_FOUND.getMessage());
-            }
-
-            int errorCount = transpilationHandler.getErrorCount();
-
+            int errorCount = handler.getErrorCount();
             if (errorCount > 0) {
-
-                StringBuilder errorsSummaryBuilder = new StringBuilder(
-                        "\n\n=========================================\nTRANSPILATION ERRORS SUMMARY:\n");
-                for (JSweetMavenPluginTranspilationHandler.Error error : transpilationHandler.getErrors()) {
-                    errorsSummaryBuilder.append("* " + error + "\n");
+                StringBuilder sb = new StringBuilder("\n\nTRANSPILATION ERRORS:\n");
+                for (JSweetMavenPluginTranspilationHandler.Error e : handler.getErrors()) {
+                    sb.append("* ").append(e).append("\n");
                 }
-                errorsSummaryBuilder.append("\n\n=========================================");
-
-                throw new MojoFailureException("transpilation failed with " + errorCount + " error(s) and "
-                        + transpilationHandler.getWarningCount() + " warning(s)" + errorsSummaryBuilder);
+                throw new MojoFailureException(
+                        "Transpilation failed with " + errorCount + " errors and "
+                                + handler.getWarningCount() + " warnings\n" + sb
+                );
+            } else if (handler.getWarningCount() > 0) {
+                getLog().info("Transpilation completed with " + handler.getWarningCount() + " warnings");
             } else {
-
-                if (transpilationHandler.getWarningCount() > 0) {
-                    getLog().info(
-                            "transpilation completed with " + transpilationHandler.getWarningCount() + " warning(s)");
-                } else {
-                    getLog().info("transpilation successfully completed with no errors and no warnings");
-                }
-
+                getLog().info("Transpilation successfully completed with no errors and no warnings");
             }
 
         } catch (Exception e) {
